@@ -1,0 +1,79 @@
+- name: Hexlet Homework N1
+  hosts: hexlet
+  remote_user: root
+  vars:
+    deployment_user: ansible-worker
+    git_repo: git@github.com:iphilka/stud-template.git
+    www_dir: /www/stud-template
+    nginx_host: ansible.iphilka.ru.conf
+
+  tasks:
+    - name: Create user "{{ deployment_user }}"
+      ansible.builtin.user:
+        name: "{{ deployment_user }}"
+        state: present
+        shell: /bin/bash
+        home: "/home/{{ deployment_user }}"
+
+    - name: Copy SSH keys and fix permissions
+      ansible.builtin.copy:
+        src: ./ssh_keys/
+        dest: "/home/{{ deployment_user }}/.ssh/"
+        owner: "{{ deployment_user }}"
+        group: "{{ deployment_user }}"
+        mode: "0600"
+
+    - name: Copy SSH config
+      ansible.builtin.copy:
+        src: ./ssh_config
+        dest: "/home/{{ deployment_user }}/.ssh/config"
+        owner: "{{ deployment_user }}"
+        group: "{{ deployment_user }}"
+        mode: "0644"
+
+    - name: Install nginx webserver
+      apt: name=nginx state=latest
+  
+    - name: Clone repository "{{ git_repo }}"
+      become: yes
+      become_user: "{{ deployment_user }}"
+      shell: |
+        eval $(/usr/bin/ssh-agent -s)
+        ssh-add ~/.ssh/id_rsa
+        rm -rf /home/"{{ deployment_user }}{{ www_dir }}"
+        git clone "{{ git_repo }}" /home/"{{ deployment_user }}{{ www_dir }}"
+
+    - name: Change nginx config to run as "{{ deployment_user }}"
+      ansible.builtin.replace:
+        path: /etc/nginx/nginx.conf
+        regexp: '^user\s+www-data;'
+        replace: "user {{ deployment_user }};"
+      notify: restart nginx
+
+    - name: Replace student name in HTML template
+      replace:
+        path: "/home/{{ deployment_user }}{{ www_dir }}/index.html"
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - { regexp: '<h1>.*</h1>', replace: '<h1>Краснов Владимир Андреевич</h1>' }
+        - { regexp: '<h2>.*</h2>', replace: '<h2>2107</h2>' }
+        - { regexp: '<h3>.*</h3>', replace: '<h3>Д</h3>' }
+
+    - name: Copy host config for nginx 
+      ansible.builtin.copy:
+        src: "./{{ nginx_host }}"
+        dest: "/etc/nginx/sites-available/{{ nginx_host }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable ansible.iphilka.ru host
+      file: "src=/etc/nginx/sites-available/{{ nginx_host }} dest=/etc/nginx/sites-enabled/{{ nginx_host }} state=link owner=root group=root mode=0644"
+      notify: restart nginx
+
+  handlers:
+    - name: restart nginx
+      service:
+        name=nginx
+        state=restarted
